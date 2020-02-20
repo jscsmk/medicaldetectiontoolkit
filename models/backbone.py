@@ -52,16 +52,16 @@ class FPN(nn.Module):
             self.C0 = nn.Sequential(conv(cf.n_channels, start_filts, ks=3, pad=1, norm=cf.norm, relu=cf.relu),
                                     conv(start_filts, start_filts, ks=3, pad=1, norm=cf.norm, relu=cf.relu))
 
-            self.C1 = conv(start_filts, start_filts, ks=7, stride=(2, 2, 1) if conv.dim == 3 else 2, pad=3, norm=cf.norm, relu=cf.relu)
+            self.C1 = conv(start_filts, start_filts, ks=7, stride=2, pad=3, norm=cf.norm, relu=cf.relu)
 
         else:
-            self.C1 = conv(cf.n_channels, start_filts, ks=7, stride=(2, 2, 1) if conv.dim == 3 else 2, pad=3, norm=cf.norm, relu=cf.relu)
+            self.C1 = conv(cf.n_channels, start_filts, ks=7, stride=2, pad=3, norm=cf.norm, relu=cf.relu)
 
         start_filts_exp = start_filts * self.block_expansion
 
         C2_layers = []
         C2_layers.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-                         if conv.dim == 2 else nn.MaxPool3d(kernel_size=3, stride=(2, 2, 1), padding=1))
+                         if conv.dim == 2 else nn.MaxPool3d(kernel_size=3, stride=2, padding=1))
         C2_layers.append(self.block(start_filts, start_filts, conv=conv, stride=1, norm=cf.norm, relu=cf.relu,
                                     downsample=(start_filts, self.block_expansion, 1)))
         for i in range(1, self.n_blocks[0]):

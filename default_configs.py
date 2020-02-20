@@ -32,10 +32,10 @@ class DefaultConfigs:
         self.select_prototype_subset = None
 
         # some default paths.
-        self.backbone_path = 'models/backbone.py'
+        self.backbone_path = 'models\\backbone.py'
         self.source_dir = os.path.dirname(os.path.realpath(__file__)) #current dir.
         self.input_df_name = 'info_df.pickle'
-        self.model_path = 'models/{}.py'.format(self.model)
+        self.model_path = 'models\\{}.py'.format(self.model)
 
         if server_env:
             self.source_dir = '/home/jaegerp/code/mamma_code/medicaldetectiontoolkit'
@@ -74,7 +74,7 @@ class DefaultConfigs:
         #########################
 
         # number of folds in cross validation.
-        self.n_cv_splits = 5
+        self.n_cv_splits = 1
 
 
         # number of probabilistic samples in validation.
