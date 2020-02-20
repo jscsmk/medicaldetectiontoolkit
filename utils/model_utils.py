@@ -25,6 +25,7 @@ import scipy.ndimage
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
+from torchvision.ops import roi_align
 
 
 ############################################################
@@ -889,3 +890,90 @@ def batch_dice_mask(pred, y, mask, false_positive_weight=1.0, smooth=1e-6):
 
     else:
         raise ValueError('wrong input dimension in dice loss')
+
+
+
+############################################################
+# ROI_Align implemented in torchvision
+############################################################
+
+
+def roi_align_2D(bboxes, feature_map, batch_idx, pool_size=5):
+
+    def crop_2d_split(img, boxes, ind): # img: (b, c, y, x)
+        _, _, Y, X = img.shape
+        num_boxes = boxes.shape[0]
+        y1, x1, y2, x2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+        x1 = torch.unsqueeze(x1, -1) * X
+        x2 = torch.unsqueeze(x2, -1) * X
+        y1 = torch.unsqueeze(y1, -1) * Y
+        y2 = torch.unsqueeze(y2, -1) * Y
+        ind = torch.unsqueeze(ind, -1).float()
+        rois = torch.cat((ind, x1, y1, x2, y2), -1)
+
+        temp_size = 1024
+        i = 0
+        concat_list = []
+        while i < num_boxes:
+            if num_boxes - i < temp_size:
+                temp_size = num_boxes - i
+
+            img_temp = roi_align(img, rois[i:i+temp_size], (pool_size, pool_size)) #img_temp: (temp_size, C, p_y, p_z)
+            concat_list.append(img_temp)
+            i += temp_size
+
+        ret = torch.cat(concat_list, axis=0)
+        return ret
+
+    return crop_2d_split(feature_map, bboxes, batch_idx)
+
+
+def roi_align_3D(bboxes, feature_map, batch_idx, pool_size=5):
+
+    def crop_3d_split(img, boxes, ind): # img: (b, c, y, x, z)
+        B, C, Y, X, Z = img.shape
+        num_boxes = boxes.shape[0]
+        y1, x1, y2, x2, z1, z2 = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3], boxes[..., 4], boxes[..., 5]
+        x1 = torch.unsqueeze(x1, -1) * X
+        x2 = torch.unsqueeze(x2, -1) * X
+        y1 = torch.unsqueeze(y1, -1) * Y
+        y2 = torch.unsqueeze(y2, -1) * Y
+        z1 = torch.unsqueeze(z1, -1) * Z
+        z2 = torch.unsqueeze(z2, -1) * Z
+        t1 = torch.zeros(z1.shape).cuda()
+        t2 = torch.ones(z1.shape).cuda() * pool_size
+        ind = torch.unsqueeze(ind, -1).float()
+
+        box_xz = torch.cat((t1, x1, t2, x2), -1)
+        box_yz = torch.cat((ind, z1, y1, z2, y2), -1)
+
+        img = torch.transpose(img, 2, 3) # (B, C, X, Y, Z)
+        img = torch.reshape(img, (B, C*X, Y, Z))
+
+        temp_size = 1024
+        i = 0
+        concat_list = []
+        while i < num_boxes:
+            if num_boxes - i < temp_size:
+                temp_size = num_boxes - i
+
+            img_temp = roi_align(img, box_yz[i:i+temp_size], (pool_size, pool_size)) #img_temp: (temp_size, C*X, p_y, p_z)
+            img_temp = torch.reshape(img_temp, (temp_size, C, X, pool_size, pool_size)) # (t, C, X, p_y, p_z)
+            img_temp = torch.transpose(img_temp, 2, 3) # (t, C, p_y, X, p_z)
+            img_temp = torch.reshape(img_temp, (temp_size, C*pool_size, X, pool_size)) # (t, C*p_y, X, p_z)
+
+            temp_ind = torch.arange(temp_size).cuda()
+            temp_ind = torch.unsqueeze(temp_ind, -1).float()
+            box_xz_temp = box_xz[i:i+temp_size]
+            box_xz_temp = torch.cat((temp_ind, box_xz_temp), -1)
+
+            img_temp = roi_align(img_temp, box_xz_temp, (pool_size, pool_size)) #img_temp: (temp_size, C*p_y, p_x, p_z)
+            img_temp = torch.reshape(img_temp, (temp_size, C, pool_size, pool_size, pool_size))
+
+            concat_list.append(img_temp)
+            i += temp_size
+
+        ret = torch.cat(concat_list, axis=0)
+        return ret
+
+    return crop_3d_split(feature_map, bboxes, batch_idx)
