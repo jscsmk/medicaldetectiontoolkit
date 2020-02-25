@@ -19,12 +19,9 @@ Parts are based on https://github.com/multimodallearning/pytorch-mask-rcnn
 published under MIT license.
 """
 
+import os
 import utils.model_utils as mutils
 import utils.exp_utils as utils
-from cuda_functions.nms_2D.pth_nms import nms_gpu as nms_2D
-from cuda_functions.nms_3D.pth_nms import nms_gpu as nms_3D
-from cuda_functions.roi_align_2D.roi_align.crop_and_resize import CropAndResizeFunction as ra2D
-from cuda_functions.roi_align_3D.roi_align.crop_and_resize import CropAndResizeFunction as ra3D
 
 import numpy as np
 import torch
@@ -336,18 +333,15 @@ def proposal_layer(rpn_pred_probs, rpn_pred_deltas, proposal_count, anchors, cf)
         if batch_deltas.shape[-1] == 4:
             boxes = mutils.apply_box_deltas_2D(anchors, deltas)
             boxes = mutils.clip_boxes_2D(boxes, cf.window)
-            keep = nms_2D(torch.cat((boxes, scores.unsqueeze(1)), 1), cf.rpn_nms_threshold)
             norm = torch.from_numpy(cf.scale).float().cuda()
 
         else:
             boxes = mutils.apply_box_deltas_3D(anchors, deltas)
             boxes = mutils.clip_boxes_3D(boxes, cf.window)
-            keep = nms_3D(torch.cat((boxes, scores.unsqueeze(1)), 1), cf.rpn_nms_threshold)
             norm = torch.from_numpy(cf.scale).float().cuda()
 
-        keep = keep[:proposal_count]
-        boxes = boxes[keep, :]
-        rpn_scores = scores[keep][:, None]
+        boxes = boxes[:proposal_count, :]
+        rpn_scores = scores[:proposal_count][:, None]
 
         # pad missing boxes with 0.
         if boxes.shape[0] < proposal_count:
@@ -436,9 +430,9 @@ def pyramid_roi_align(feature_maps, rois, pool_size, pyramid_levels, dim):
         # https://hackernoon.com/how-tensorflows-tf-image-resize-stole-60-days-of-my-life-aba5eb093f35
 
         if len(pool_size) == 2:
-            pooled_features = ra2D(pool_size[0], pool_size[1], 0)(feature_maps[level_ix], level_boxes, ind)
+            pooled_features = mutils.roi_align_2D(level_boxes, feature_maps[level_ix], ind, pool_size[0])
         else:
-            pooled_features = ra3D(pool_size[0], pool_size[1], pool_size[2], 0)(feature_maps[level_ix], level_boxes, ind)
+            pooled_features = mutils.roi_align_3D(level_boxes, feature_maps[level_ix], ind, pool_size[0])
 
         pooled.append(pooled_features)
 
@@ -498,7 +492,8 @@ def detection_target_layer(batch_proposals, batch_mrcnn_class_scores, batch_gt_c
     for b in range(len(batch_gt_class_ids)):
 
         gt_class_ids = torch.from_numpy(batch_gt_class_ids[b]).int().cuda()
-        gt_masks = torch.from_numpy(batch_gt_masks[b]).float().cuda()
+        if not cf.frcnn_mode:
+            gt_masks = torch.from_numpy(batch_gt_masks[b]).float().cuda()
         if np.any(batch_gt_class_ids[b] > 0):  # skip roi selection for no gt images.
             gt_boxes = torch.from_numpy(batch_gt_boxes[b]).float().cuda() / scale
         else:
@@ -545,26 +540,29 @@ def detection_target_layer(batch_proposals, batch_mrcnn_class_scores, batch_gt_c
             std_dev = torch.from_numpy(cf.bbox_std_dev).float().cuda()
             deltas /= std_dev
 
-            # Assign positive ROIs to GT masks
-            roi_masks = gt_masks[roi_gt_box_assignment, :, :]
+            if not cf.frcnn_mode:
+                # Assign positive ROIs to GT masks
+                roi_masks = gt_masks[roi_gt_box_assignment, :, :]
 
-            # Compute mask targets
-            boxes = positive_rois
-            box_ids = torch.arange(roi_masks.size()[0]).int().cuda()
+                # Compute mask targets
+                boxes = positive_rois
+                box_ids = torch.arange(roi_masks.size()[0]).int().cuda()
 
-            if len(cf.mask_shape) == 2:
-                masks = ra2D(cf.mask_shape[0], cf.mask_shape[1], 0)(roi_masks.unsqueeze(1), boxes, box_ids)
-            else:
-                masks = ra3D(cf.mask_shape[0], cf.mask_shape[1], cf.mask_shape[2], 0)(roi_masks.unsqueeze(1), boxes, box_ids)
+                if len(cf.mask_shape) == 2:
+                    #masks = ra2D(cf.mask_shape[0], cf.mask_shape[1], 0)(roi_masks.unsqueeze(1), boxes, box_ids)
+                    masks = mutils.roi_align_2D(boxes, roi_masks.unsqueeze(1), box_ids, cf.mask_shape[0])
+                else:
+                    #masks = ra3D(cf.mask_shape[0], cf.mask_shape[1], cf.mask_shape[2], 0)(roi_masks.unsqueeze(1), boxes, box_ids)
+                    masks = mutils.roi_align_3D(boxes, roi_masks.unsqueeze(1), box_ids, cf.mask_shape[0])
 
-            masks = masks.squeeze(1)
-            # Threshold mask pixels at 0.5 to have GT masks be 0 or 1 to use with
-            # binary cross entropy loss.
-            masks = torch.round(masks)
+                masks = masks.squeeze(1)
+                # Threshold mask pixels at 0.5 to have GT masks be 0 or 1 to use with
+                # binary cross entropy loss.
+                masks = torch.round(masks)
+                sample_masks.append(masks)
 
             sample_positive_indices.append(batch_element_indices[positive_indices])
             sample_deltas.append(deltas)
-            sample_masks.append(masks)
             sample_class_ids.append(roi_gt_class_ids)
             positive_count += positive_samples
         else:
@@ -580,9 +578,11 @@ def detection_target_layer(batch_proposals, batch_mrcnn_class_scores, batch_gt_c
             sample_negative_indices.append(batch_element_indices[negative_indices[raw_sampled_indices]])
             negative_count += raw_sampled_indices.size()[0]
 
+    target_masks = None
     if len(sample_positive_indices) > 0:
         target_deltas = torch.cat(sample_deltas)
-        target_masks = torch.cat(sample_masks)
+        if not cf.frcnn_mode:
+            target_masks = torch.cat(sample_masks)
         target_class_ids = torch.cat(sample_class_ids)
 
     # Pad target information with zeros for negative ROIs.
@@ -592,8 +592,9 @@ def detection_target_layer(batch_proposals, batch_mrcnn_class_scores, batch_gt_c
         target_class_ids = torch.cat([target_class_ids, zeros], dim=0)
         zeros = torch.zeros(negative_count, cf.dim * 2).cuda()
         target_deltas = torch.cat([target_deltas, zeros], dim=0)
-        zeros = torch.zeros(negative_count, *cf.mask_shape).cuda()
-        target_masks = torch.cat([target_masks, zeros], dim=0)
+        if not cf.frcnn_mode:
+            zeros = torch.zeros(negative_count, *cf.mask_shape).cuda()
+            target_masks = torch.cat([target_masks, zeros], dim=0)
     elif positive_count > 0:
         sample_indices = torch.cat(sample_positive_indices)
     elif negative_count > 0:
@@ -602,13 +603,15 @@ def detection_target_layer(batch_proposals, batch_mrcnn_class_scores, batch_gt_c
         target_class_ids = zeros
         zeros = torch.zeros(negative_count, cf.dim * 2).cuda()
         target_deltas = zeros
-        zeros = torch.zeros(negative_count, *cf.mask_shape).cuda()
-        target_masks = zeros
+        if not cf.frcnn_mode:
+            zeros = torch.zeros(negative_count, *cf.mask_shape).cuda()
+            target_masks = zeros
     else:
         sample_indices = torch.LongTensor().cuda()
         target_class_ids = torch.IntTensor().cuda()
         target_deltas = torch.FloatTensor().cuda()
-        target_masks = torch.FloatTensor().cuda()
+        if not cf.frcnn_mode:
+            target_masks = torch.FloatTensor().cuda()
 
     return sample_indices, target_class_ids, target_deltas, target_masks
 
@@ -633,7 +636,7 @@ def refine_detections(rois, probs, deltas, batch_ixs, cf):
     # repeat vectors to fill in predictions for all foreground classes.
     for ii in range(1, fg_classes + 1):
         class_ids += [ii] * rois.shape[0]
-    class_ids = torch.from_numpy(np.array(class_ids)).cuda()
+    class_ids = torch.from_numpy(np.array(class_ids)).long().cuda()
 
     rois = rois.repeat(fg_classes, 1)
     probs = probs.repeat(fg_classes, 1)
@@ -684,9 +687,9 @@ def refine_detections(rois, probs, deltas, batch_ixs, cf):
                 ix_rois = ix_rois[order, :]
 
                 if cf.dim == 2:
-                    class_keep = nms_2D(torch.cat((ix_rois, ix_scores.unsqueeze(1)), dim=1), cf.detection_nms_threshold)
+                    class_keep = torch.arange(ix_scores.size()[0]).long().cuda()
                 else:
-                    class_keep = nms_3D(torch.cat((ix_rois, ix_scores.unsqueeze(1)), dim=1), cf.detection_nms_threshold)
+                    class_keep = torch.arange(ix_scores.size()[0]).long().cuda()
 
                 # map indices back.
                 class_keep = keep[score_keep[bixs[ixs[order[class_keep]]]]]
@@ -730,15 +733,17 @@ def get_results(cf, img_shape, detections, detection_masks, box_results_list=Non
              class-specific return of masks will come with implementation of instance segmentation evaluation.
     """
     detections = detections.cpu().data.numpy()
-    if cf.dim == 2:
-        detection_masks = detection_masks.permute(0, 2, 3, 1).cpu().data.numpy()
-    else:
-        detection_masks = detection_masks.permute(0, 2, 3, 4, 1).cpu().data.numpy()
-
     # restore batch dimension of merged detections using the batch_ix info.
     batch_ixs = detections[:, cf.dim*2]
     detections = [detections[batch_ixs == ix] for ix in range(img_shape[0])]
-    mrcnn_mask = [detection_masks[batch_ixs == ix] for ix in range(img_shape[0])]
+
+    if not cf.frcnn_mode:
+        if cf.dim == 2:
+            detection_masks = detection_masks.permute(0, 2, 3, 1).cpu().data.numpy()
+        else:
+            detection_masks = detection_masks.permute(0, 2, 3, 4, 1).cpu().data.numpy()
+
+        mrcnn_mask = [detection_masks[batch_ixs == ix] for ix in range(img_shape[0])]
 
     # for test_forward, where no previous list exists.
     if box_results_list is None:
@@ -748,11 +753,13 @@ def get_results(cf, img_shape, detections, detection_masks, box_results_list=Non
     # loop over batch and unmold detections.
     for ix in range(img_shape[0]):
 
+        final_masks = np.zeros(img_shape[2:])
         if 0 not in detections[ix].shape:
             boxes = detections[ix][:, :2 * cf.dim].astype(np.int32)
             class_ids = detections[ix][:, 2 * cf.dim + 1].astype(np.int32)
             scores = detections[ix][:, 2 * cf.dim + 2]
-            masks = mrcnn_mask[ix][np.arange(boxes.shape[0]), ..., class_ids]
+            if not cf.frcnn_mode:
+                masks = mrcnn_mask[ix][np.arange(boxes.shape[0]), ..., class_ids]
 
             # Filter out detections with zero area. Often only happens in early
             # stages of training when the network weights are still a bit random.
@@ -766,29 +773,28 @@ def get_results(cf, img_shape, detections, detection_masks, box_results_list=Non
                 boxes = np.delete(boxes, exclude_ix, axis=0)
                 class_ids = np.delete(class_ids, exclude_ix, axis=0)
                 scores = np.delete(scores, exclude_ix, axis=0)
-                masks = np.delete(masks, exclude_ix, axis=0)
+                if not cf.frcnn_mode:
+                    masks = np.delete(masks, exclude_ix, axis=0)
 
-            # Resize masks to original image size and set boundary threshold.
-            full_masks = []
-            permuted_image_shape = list(img_shape[2:]) + [img_shape[1]]
-            if return_masks:
-                for i in range(masks.shape[0]):
-                    # Convert neural network mask to full size mask.
-                    full_masks.append(mutils.unmold_mask_2D(masks[i], boxes[i], permuted_image_shape)
-                    if cf.dim == 2 else mutils.unmold_mask_3D(masks[i], boxes[i], permuted_image_shape))
-            # if masks are returned, take max over binary full masks of all predictions in this image.
-            # right now only binary masks for plotting/monitoring. for instance segmentation return all proposal maks.
-            final_masks = np.max(np.array(full_masks), 0) if len(full_masks) > 0 else np.zeros(
-                (*permuted_image_shape[:-1],))
+            if not cf.frcnn_mode:
+                # Resize masks to original image size and set boundary threshold.
+                full_masks = []
+                permuted_image_shape = list(img_shape[2:]) + [img_shape[1]]
+                if return_masks:
+                    for i in range(masks.shape[0]):
+                        # Convert neural network mask to full size mask.
+                        full_masks.append(mutils.unmold_mask_2D(masks[i], boxes[i], permuted_image_shape)
+                        if cf.dim == 2 else mutils.unmold_mask_3D(masks[i], boxes[i], permuted_image_shape))
+                # if masks are returned, take max over binary full masks of all predictions in this image.
+                # right now only binary masks for plotting/monitoring. for instance segmentation return all proposal maks.
+                final_masks = np.max(np.array(full_masks), 0) if len(full_masks) > 0 else np.zeros(
+                    (*permuted_image_shape[:-1],))
 
             # add final perdictions to results.
             if 0 not in boxes.shape:
                 for ix2, score in enumerate(scores):
                     box_results_list[ix].append({'box_coords': boxes[ix2], 'box_score': score,
                                                  'box_type': 'det', 'box_pred_class_id': class_ids[ix2]})
-        else:
-            # pad with zero dummy masks.
-            final_masks = np.zeros(img_shape[2:])
 
         seg_preds.append(final_masks)
 
@@ -861,11 +867,13 @@ class net(nn.Module):
                 'seg_preds': pixel-wise class predictions (b, 1, y, x, (z)) with values [0, n_classes].
                 'monitor_values': dict of values to be monitored.
         """
-        img = batch['data']
-        gt_class_ids = batch['roi_labels']
-        gt_boxes = batch['bb_target']
+        img = batch['img']
+        gt_class_ids = batch['cls']
+        gt_boxes = batch['bbox']
         axes = (0, 2, 3, 1) if self.cf.dim == 2 else (0, 2, 3, 4, 1)
-        gt_masks = [np.transpose(batch['roi_masks'][ii], axes=axes) for ii in range(len(batch['roi_masks']))]
+        gt_masks = None
+        if not cf.frcnn_mode:
+            gt_masks = [np.transpose(batch['roi_masks'][ii], axes=axes) for ii in range(len(batch['roi_masks']))]
 
 
         img = torch.from_numpy(img).float().cuda()
@@ -887,8 +895,8 @@ class net(nn.Module):
 
                 # add gt boxes to output list for monitoring.
                 for ix in range(len(gt_boxes[b])):
-                    box_results_list[b].append({'box_coords': batch['bb_target'][b][ix],
-                                                'box_label': batch['roi_labels'][b][ix], 'box_type': 'gt'})
+                    box_results_list[b].append({'box_coords': batch['bbox'][b][ix],
+                                                'box_label': batch['cls'][b][ix], 'box_type': 'gt'})
 
                 # match gt boxes with anchors to generate targets for RPN losses.
                 rpn_match, rpn_target_deltas = mutils.gt_anchor_matching(self.cf, self.np_anchors, gt_boxes[b])
@@ -912,7 +920,7 @@ class net(nn.Module):
             batch_rpn_bbox_loss += rpn_bbox_loss / img.shape[0]
 
             # add negative anchors used for loss to output list for monitoring.
-            neg_anchors = mutils.clip_boxes_numpy(self.np_anchors[np.argwhere(rpn_match == -1)][0, neg_anchor_ix], img.shape[2:])
+            neg_anchors = mutils.clip_boxes_numpy(self.np_anchors[np.argwhere(rpn_match.cpu() == -1)][0, neg_anchor_ix], img.shape[2:])
             for n in neg_anchors:
                 box_results_list[b].append({'box_coords': n, 'box_type': 'neg_anchor'})
 
@@ -977,7 +985,7 @@ class net(nn.Module):
                        [[{box_0}, ... {box_n}], [{box_0}, ... {box_n}], ...]
                'seg_preds': pixel-wise class predictions (b, 1, y, x, (z)) with values [0, n_classes]
         """
-        img = batch['data']
+        img = batch['img']
         img = torch.from_numpy(img).float().cuda()
         _, _, _, detections, detection_masks = self.forward(img)
         results_dict = get_results(self.cf, img.shape, detections, detection_masks, return_masks=return_masks)
@@ -1035,16 +1043,18 @@ class net(nn.Module):
         self.batch_mrcnn_class_scores = F.softmax(batch_mrcnn_class_logits, dim=1)
 
         # refine classified proposals, filter and return final detections.
-        detections = refine_detections(rpn_rois, self.batch_mrcnn_class_scores, batch_mrcnn_bbox, batch_ixs, self.cf, )
+        detections = refine_detections(rpn_rois, self.batch_mrcnn_class_scores, batch_mrcnn_bbox, batch_ixs, self.cf)
 
-        # forward remaining detections through mask-head to generate corresponding masks.
-        scale = [img.shape[2]] * 4 + [img.shape[-1]] * 2
-        scale = torch.from_numpy(np.array(scale[:self.cf.dim * 2] + [1])[None]).float().cuda()
+        detection_masks = None
+        if not self.cf.frcnn_mode:
+            # forward remaining detections through mask-head to generate corresponding masks.
+            scale = [img.shape[2]] * 4 + [img.shape[-1]] * 2
+            scale = torch.from_numpy(np.array(scale[:self.cf.dim * 2] + [1])[None]).float().cuda()
 
 
-        detection_boxes = detections[:, :self.cf.dim * 2 + 1] / scale
-        with torch.no_grad():
-            detection_masks = self.mask(self.mrcnn_feature_maps, detection_boxes)
+            detection_boxes = detections[:, :self.cf.dim * 2 + 1] / scale
+            with torch.no_grad():
+                detection_masks = self.mask(self.mrcnn_feature_maps, detection_boxes)
 
         return [rpn_pred_logits, rpn_pred_deltas, batch_proposal_boxes, detections, detection_masks]
 
@@ -1071,13 +1081,16 @@ class net(nn.Module):
 
         # re-use feature maps and RPN output from first forward pass.
         sample_proposals = self.rpn_rois_batch_info[sample_ix]
+        sample_mask = None
         if 0 not in sample_proposals.size():
             sample_logits, sample_boxes = self.classifier(self.mrcnn_feature_maps, sample_proposals)
-            sample_mask = self.mask(self.mrcnn_feature_maps, sample_proposals)
+            if not self.cf.frcnn_mode:
+                sample_mask = self.mask(self.mrcnn_feature_maps, sample_proposals)
         else:
             sample_logits = torch.FloatTensor().cuda()
             sample_boxes = torch.FloatTensor().cuda()
-            sample_mask = torch.FloatTensor().cuda()
+            if not self.cf.frcnn_mode:
+                sample_mask = torch.FloatTensor().cuda()
 
         return [sample_logits, sample_boxes, sample_mask, sample_target_class_ids, sample_target_deltas,
                 sample_target_mask, sample_proposals]
