@@ -19,6 +19,9 @@ Parts are based on https://github.com/multimodallearning/pytorch-mask-rcnn
 published under MIT license.
 """
 
+import os
+import cv2
+import json
 import numpy as np
 import scipy.misc
 import scipy.ndimage
@@ -648,7 +651,7 @@ def unique1d(tensor):
         return tensor
     tensor = tensor.sort()[0]
     unique_bool = tensor[1:] != tensor [:-1]
-    first_element = Variable(torch.ByteTensor([True]), requires_grad=False)
+    first_element = Variable(torch.BoolTensor([True]), requires_grad=False)
     if tensor.is_cuda:
         first_element = first_element.cuda()
     unique_bool = torch.cat((first_element, unique_bool),dim=0)
@@ -977,3 +980,158 @@ def roi_align_3D(bboxes, feature_map, batch_idx, pool_size=5):
         return ret
 
     return crop_3d_split(feature_map, bboxes, batch_idx)
+
+
+
+######################
+# CPU version of NMS #
+######################
+
+
+def aabb_area(box):
+    area = (box[2] - box[0]) * (box[3] - box[1])
+    if len(box) == 6:
+        area *= (box[5] - box[4])
+
+    return area
+
+
+def nms_2D_cpu(boxes, overlap_thresh):
+    # assume that bbox list is already sorted by score
+    keep = []
+    for i in range(len(boxes)):
+        box = boxes[i]['box_coords']
+
+        area_i = aabb_area(box)
+        if area_i == 0:
+            continue
+
+        found = False
+        y1_i, x1_i, y2_i, x2_i = box
+        for j in keep:
+            area_j = aabb_area(boxes[j]['box_coords'])
+            if area_j == 0:
+                break
+
+            y1_j, x1_j, y2_j, x2_j = boxes[j]['box_coords']
+
+            inter_x1 = max(x1_i, x1_j)
+            inter_y1 = max(y1_i, y1_j)
+            inter_x2 = min(x2_i, x2_j)
+            inter_y2 = min(y2_i, y2_j)
+            inter_w = max(0, inter_x2 - inter_x1)
+            inter_h = max(0, inter_y2 - inter_y1)
+
+            area_inter = inter_w * inter_h
+            area_union = area_i + area_j - area_inter
+            iou = area_inter / (area_union + 1e-6)
+
+            if iou >= overlap_thresh:
+                found = True
+                break
+
+        if not found:
+            keep.append(i)
+
+    return keep
+
+
+def nms_3D_cpu(boxes, overlap_thresh):
+    # assume that bbox list is already sorted by score
+    keep = []
+    for i in range(len(boxes)):
+        box = boxes[i]['box_coords']
+
+        area_i = aabb_area(box)
+        if area_i == 0:
+            continue
+
+        found = False
+        y1_i, x1_i, y2_i, x2_i, z1_i, z2_i = box
+        for j in keep:
+            area_j = aabb_area(boxes[j]['box_coords'])
+            if area_j == 0:
+                break
+
+            y1_j, x1_j, y2_j, x2_j, z1_j, z2_j = boxes[j]['box_coords']
+
+            inter_x1 = max(x1_i, x1_j)
+            inter_y1 = max(y1_i, y1_j)
+            inter_z1 = max(z1_i, z1_j)
+            inter_x2 = min(x2_i, x2_j)
+            inter_y2 = min(y2_i, y2_j)
+            inter_z2 = min(z2_i, z2_j)
+            inter_w = max(0, inter_x2 - inter_x1)
+            inter_h = max(0, inter_y2 - inter_y1)
+            inter_d = max(0, inter_z2 - inter_z1)
+
+            area_inter = inter_w * inter_h * inter_d
+            area_union = area_i + area_j - area_inter
+            iou = area_inter / (area_union + 1e-6)
+
+            if iou >= overlap_thresh:
+                found = True
+                break
+
+        if not found:
+            keep.append(i)
+
+    return keep
+
+
+
+###############################
+# saving/visualizeing results #
+###############################
+
+
+def restore_coords(x, y, H, W, orig_H, orig_W):
+    crop_W = int(orig_H * 1.5)
+    margin = (orig_W - crop_W) // 2
+    x = int(x * crop_W / W + margin)
+    y = int(y * orig_H / H)
+    return x, y
+
+
+def save_results(batch, boxes_batch, path, do_nms=False, nms_thresh=0.2, save_img=False, save_json=False):
+    batch_size = len(boxes_batch)
+    for b in range(batch_size):
+        file_name = batch['id'][b]
+        img_path = batch['path'][b]
+        orig_img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        input_img = batch['img'][b]
+
+        orig_H, orig_W, _ = orig_img.shape
+        _, H, W = input_img.shape
+        print(H, W)
+        boxes = boxes_batch[b]
+        keep = range(len(boxes))
+        if do_nms:
+            keep = nms_2D_cpu(boxes, nms_thresh)
+
+        output_list = []
+        for i in keep:
+            box = boxes[i]
+            y1, x1, y2, x2 = box['box_coords']
+            x1, y1 = restore_coords(x1, y1, H, W, orig_H, orig_W)
+            x2, y2 = restore_coords(x2, y2, H, W, orig_H, orig_W)
+
+            if save_img:
+                cv2.line(orig_img, (x1, y1), (x1, y2), (0, 0, 255), 1)
+                cv2.line(orig_img, (x1, y1), (x2, y1), (0, 0, 255), 1)
+                cv2.line(orig_img, (x2, y2), (x1, y2), (0, 0, 255), 1)
+                cv2.line(orig_img, (x2, y2), (x2, y1), (0, 0, 255), 1)
+
+            if save_json:
+                cur_dict = {}
+                cur_dict['center'] = ((x1+x2)//2, (y1+y2)//2)
+                cur_dict['bbox_wh'] = (x2-x1, y2-y1)
+                cur_dict['score'] = box['box_score']
+                output_list.append(cur_dict)
+
+        if save_img:
+            cv2.imwrite(os.path.join(path, '{}_result.jpg'.format(file_name)), orig_img)
+
+        if save_json:
+            with open(os.path.join(path, '{}_result.json'.format(file_name)), 'w') as f:
+                json.dump(output_list, f)

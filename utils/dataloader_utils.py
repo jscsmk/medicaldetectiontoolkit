@@ -17,6 +17,8 @@
 import numpy as np
 import os
 from multiprocessing import Pool
+import cv2
+import math
 
 
 
@@ -275,3 +277,92 @@ def delete_npy(folder):
     npy_files = [i for i in npy_files if os.path.isfile(i)]
     for n in npy_files:
         os.remove(n)
+
+
+#######################
+# Utils for pano data #
+#######################
+
+def is_true(s):
+    if 'T' in s or 't' in s:
+        return True
+
+    return False
+
+
+def eq_hist(img):
+    eq = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(20, 20))
+    res = eq.apply(img)
+    return res
+
+
+def crop_center_and_resize(img, size=(224,224)):
+    height, width = img.shape
+    crop_width = int(height * 1.5)
+    margin = (width - crop_width) // 2
+
+    # crop and resize
+    img = img[:, margin: margin + crop_width]
+    img = cv2.resize(img, dsize=(size[1], size[0]))
+
+    # normalize
+    img = (np.float64(img) - np.mean(img)) / np.std(img)
+
+    return img
+
+
+def get_bbox(txt_path, h, w):
+    with open(txt_path, 'r') as txt_f:
+        content = txt_f.readlines()
+        targets = []
+
+        for line in content:
+            teeth_data = line.split(',')
+
+            # skip empty lines
+            if len(teeth_data) < 2:
+                continue
+
+            # skip missing tooth
+            if not is_true(teeth_data[1]):
+                continue
+
+            x_max = y_max = -math.inf
+            x_min = y_min = math.inf
+            j = 3
+            while j < 19:
+                x = int(teeth_data[j].strip()) + w // 2
+                y = int(teeth_data[j+1].strip()) + h // 2
+                j += 2
+                x_max = max(x_max, x)
+                y_max = max(y_max, y)
+                x_min = min(x_min, x)
+                y_min = min(y_min, y)
+
+            x_min, y_min = interpret_coord((x_min, y_min), (h, w), target_size=(512, 768))
+            x_max, y_max = interpret_coord((x_max, y_max), (h, w), target_size=(512, 768))
+            targets.append([y_min, x_min, y_max, x_max])
+
+    targets = np.array(targets)
+    return targets
+
+
+def interpret_coord(coord, size, target_size=(224, 224), do_normalize=False):
+    x, y = coord
+    h, w = size
+    target_h, target_w = target_size
+
+    crop_width = int(h * 1.5)
+    margin = (w - crop_width) // 2
+    x -= margin
+
+    # normalize to [0, 1]
+    x /= crop_width
+    y /= h
+
+    # if not do_normalize, rescale to [0,224]
+    if not do_normalize:
+        x = int(x * target_w)
+        y = int(y * target_h)
+
+    return x, y

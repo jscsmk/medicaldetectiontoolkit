@@ -25,6 +25,7 @@ import sys
 import importlib.util
 import pandas as pd
 import pickle
+import shutil
 
 
 
@@ -66,24 +67,24 @@ def prep_exp(dataset_path, exp_path, server_env, use_stored_settings=True, is_tr
         if not os.path.exists(exp_path):
             os.mkdir(exp_path)
             os.mkdir(os.path.join(exp_path, 'plots'))
-            subprocess.call('cp {} {}'.format(os.path.join(dataset_path, 'configs.py'), os.path.join(exp_path, 'configs.py')), shell=True)
-            subprocess.call('cp {} {}'.format('default_configs.py', os.path.join(exp_path, 'default_configs.py')), shell=True)
+            shutil.copy(os.path.join(dataset_path, 'configs.py'), os.path.join(exp_path, 'configs.py'))
+            shutil.copy('default_configs.py', os.path.join(exp_path, 'default_configs.py'))
 
 
         if use_stored_settings:
-            subprocess.call('cp {} {}'.format('default_configs.py', os.path.join(exp_path, 'default_configs.py')), shell=True)
+            shutil.copy('default_configs.py', os.path.join(exp_path, 'default_configs.py'))
             cf_file = import_module('cf', os.path.join(exp_path, 'configs.py'))
             cf = cf_file.configs(server_env)
             # only the first process copies the model selcted in configs to exp_path.
             if not os.path.isfile(os.path.join(exp_path, 'model.py')):
-                subprocess.call('cp {} {}'.format(cf.model_path, os.path.join(exp_path, 'model.py')), shell=True)
-                subprocess.call('cp {} {}'.format(os.path.join(cf.backbone_path), os.path.join(exp_path, 'backbone.py')), shell=True)
+                shutil.copy(cf.model_path, os.path.join(exp_path, 'model.py'))
+                shutil.copy(os.path.join(cf.backbone_path), os.path.join(exp_path, 'backbone.py'))
 
             # copy the snapshot model scripts from exp_dir back to the source_dir as tmp_model / tmp_backbone.
             tmp_model_path = os.path.join(cf.source_dir, 'models', 'tmp_model.py')
             tmp_backbone_path = os.path.join(cf.source_dir, 'models', 'tmp_backbone.py')
-            subprocess.call('cp {} {}'.format(os.path.join(exp_path, 'model.py'), tmp_model_path), shell=True)
-            subprocess.call('cp {} {}'.format(os.path.join(exp_path, 'backbone.py'), tmp_backbone_path), shell=True)
+            shutil.copy(os.path.join(exp_path, 'model.py'), tmp_model_path)
+            shutil.copy(os.path.join(exp_path, 'backbone.py'), tmp_backbone_path)
             cf.model_path = tmp_model_path
             cf.backbone_path = tmp_backbone_path
 
@@ -91,10 +92,10 @@ def prep_exp(dataset_path, exp_path, server_env, use_stored_settings=True, is_tr
             # run training with source code info and copy snapshot of model to exp_dir for later testing (overwrite scripts if exp_dir already exists.)
             cf_file = import_module('cf', os.path.join(dataset_path, 'configs.py'))
             cf = cf_file.configs(server_env)
-            subprocess.call('cp {} {}'.format(cf.model_path, os.path.join(exp_path, 'model.py')), shell=True)
-            subprocess.call('cp {} {}'.format(cf.backbone_path, os.path.join(exp_path, 'backbone.py')), shell=True)
-            subprocess.call('cp {} {}'.format('default_configs.py', os.path.join(exp_path, 'default_configs.py')), shell=True)
-            subprocess.call('cp {} {}'.format(os.path.join(dataset_path, 'configs.py'), os.path.join(exp_path, 'configs.py')), shell=True)
+            shutil.copy(cf.model_path, os.path.join(exp_path, 'model.py'))
+            shutil.copy(cf.backbone_path, os.path.join(exp_path, 'backbone.py'))
+            shutil.copy('default_configs.py', os.path.join(exp_path, 'default_configs.py'))
+            shutil.copy(os.path.join(dataset_path, 'configs.py'), os.path.join(exp_path, 'configs.py'))
 
     else:
         # for testing, copy the snapshot model scripts from exp_dir back to the source_dir as tmp_model / tmp_backbone.
@@ -102,8 +103,8 @@ def prep_exp(dataset_path, exp_path, server_env, use_stored_settings=True, is_tr
         cf = cf_file.configs(server_env)
         tmp_model_path = os.path.join(cf.source_dir, 'models', 'tmp_model.py')
         tmp_backbone_path = os.path.join(cf.source_dir, 'models', 'tmp_backbone.py')
-        subprocess.call('cp {} {}'.format(os.path.join(exp_path, 'model.py'), tmp_model_path), shell=True)
-        subprocess.call('cp {} {}'.format(os.path.join(exp_path, 'backbone.py'), tmp_backbone_path), shell=True)
+        shutil.copy(os.path.join(exp_path, 'model.py'), tmp_model_path)
+        shutil.copy(os.path.join(exp_path, 'backbone.py'), tmp_backbone_path)
         cf.model_path = tmp_model_path
         cf.backbone_path = tmp_backbone_path
 
@@ -193,15 +194,12 @@ class ModelSelector:
 
 
 
-def load_checkpoint(checkpoint_path, net, optimizer):
+def load_checkpoint(checkpoint_path, checkpoint_name, net, optimizer=None):
 
-    checkpoint_params = torch.load(os.path.join(checkpoint_path, 'params.pth'))
+    checkpoint_params = torch.load(os.path.join(checkpoint_path, checkpoint_name))
     net.load_state_dict(checkpoint_params['state_dict'])
-    optimizer.load_state_dict(checkpoint_params['optimizer'])
-    with open(os.path.join(checkpoint_path, 'monitor_metrics.pickle'), 'rb') as handle:
-        monitor_metrics = pickle.load(handle)
-    starting_epoch = checkpoint_params['epoch'] + 1
-    return starting_epoch, monitor_metrics
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint_params['optimizer'])
 
 
 
