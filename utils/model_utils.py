@@ -1093,40 +1093,43 @@ def restore_coords(x, y, H, W, orig_H, orig_W):
     return x, y
 
 
-def save_results(batch, boxes_batch, path, do_nms=False, nms_thresh=0.2, save_img=False, save_json=False):
+def save_results(batch, boxes_batch, path, do_nms=False, nms_thresh=0.3, save_img=False, save_json=False):
     batch_size = len(boxes_batch)
     for b in range(batch_size):
         file_name = batch['id'][b]
+        print(file_name)
         img_path = batch['path'][b]
         orig_img = cv2.imread(img_path, cv2.IMREAD_COLOR)
         input_img = batch['img'][b]
 
         orig_H, orig_W, _ = orig_img.shape
         _, H, W = input_img.shape
-        print(H, W)
         boxes = boxes_batch[b]
         keep = range(len(boxes))
         if do_nms:
             keep = nms_2D_cpu(boxes, nms_thresh)
 
+        font_scale = 1.5
+        font = cv2.FONT_HERSHEY_PLAIN
         output_list = []
         for i in keep:
             box = boxes[i]
+            score = str(box['box_score'])[:6]
             y1, x1, y2, x2 = box['box_coords']
             x1, y1 = restore_coords(x1, y1, H, W, orig_H, orig_W)
             x2, y2 = restore_coords(x2, y2, H, W, orig_H, orig_W)
 
             if save_img:
-                cv2.line(orig_img, (x1, y1), (x1, y2), (0, 0, 255), 1)
-                cv2.line(orig_img, (x1, y1), (x2, y1), (0, 0, 255), 1)
-                cv2.line(orig_img, (x2, y2), (x1, y2), (0, 0, 255), 1)
-                cv2.line(orig_img, (x2, y2), (x2, y1), (0, 0, 255), 1)
+                text_width, text_height = cv2.getTextSize(score, font, font_scale, thickness=1)[0]
+                cv2.rectangle(orig_img, (x1, y1), (x2, y2), (0, 255, 128), thickness=3)
+                cv2.rectangle(orig_img, (x1, y1 - text_height), (x1 + text_width, y1), (0, 255, 128), cv2.FILLED)
+                cv2.putText(orig_img, score, (x1, y1), font, font_scale, (0,0,0), thickness=1)
 
             if save_json:
                 cur_dict = {}
                 cur_dict['center'] = ((x1+x2)//2, (y1+y2)//2)
                 cur_dict['bbox_wh'] = (x2-x1, y2-y1)
-                cur_dict['score'] = box['box_score']
+                cur_dict['score'] = score
                 output_list.append(cur_dict)
 
         if save_img:
