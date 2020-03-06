@@ -872,7 +872,7 @@ class net(nn.Module):
         gt_boxes = batch['bbox']
         axes = (0, 2, 3, 1) if self.cf.dim == 2 else (0, 2, 3, 4, 1)
         gt_masks = None
-        if not cf.frcnn_mode:
+        if not self.cf.frcnn_mode:
             gt_masks = [np.transpose(batch['roi_masks'][ii], axes=axes) for ii in range(len(batch['roi_masks']))]
 
 
