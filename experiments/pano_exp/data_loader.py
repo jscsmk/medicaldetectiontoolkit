@@ -41,7 +41,7 @@ class PanoBatchGenerator:
     def __init__(self, all_data, cf, mode='train'):
         self.all_data = all_data
         self.cf = cf
-        self.batch_size = cf.batch_size
+        self.batch_size = 1 if mode=='test' else cf.batch_size
         self.mode = mode
 
     def ready(self, do_shuffle=True):
@@ -70,15 +70,15 @@ class PanoBatchGenerator:
             img = np.expand_dims(img, axis=0) # (1, y, x)
 
             if self.mode == 'train':
-                bbox = dutils.get_bbox(data['target'], orig_h, orig_w) # (n_box, (y1, x1, y2, x2))
+                bbox, bbox_cls = dutils.get_bbox(data['target'], orig_h, orig_w) # (n_box, (y1, x1, y2, x2))
             else:
-                bbox = []
+                bbox, bbox_cls = [], []
 
             cur_imgs_batch.append(img)
             cur_id_batch.append(data['img_id'])
             cur_path_batch.append(data['img'])
             cur_bbox_batch.append(bbox)
-            cur_cls_batch.append(np.array([1 for _ in range(len(bbox))]))
+            cur_cls_batch.append(bbox_cls)
 
         cur_id_batch = np.array(cur_id_batch)
         cur_path_batch = np.array(cur_path_batch)

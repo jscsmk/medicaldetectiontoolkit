@@ -712,7 +712,8 @@ def refine_detections(rois, probs, deltas, batch_ixs, cf):
     result = torch.cat((refined_rois[keep],
                         batch_ixs[keep].unsqueeze(1),
                         class_ids[keep].unsqueeze(1).float(),
-                        class_scores[keep].unsqueeze(1)), dim=1)
+                        class_scores[keep].unsqueeze(1),
+                        probs[keep]), dim=1)
 
     return result
 
@@ -758,6 +759,7 @@ def get_results(cf, img_shape, detections, detection_masks, box_results_list=Non
             boxes = detections[ix][:, :2 * cf.dim].astype(np.int32)
             class_ids = detections[ix][:, 2 * cf.dim + 1].astype(np.int32)
             scores = detections[ix][:, 2 * cf.dim + 2]
+            probs = detections[ix][:, 2 * cf.dim + 3:]
             if not cf.frcnn_mode:
                 masks = mrcnn_mask[ix][np.arange(boxes.shape[0]), ..., class_ids]
 
@@ -773,6 +775,7 @@ def get_results(cf, img_shape, detections, detection_masks, box_results_list=Non
                 boxes = np.delete(boxes, exclude_ix, axis=0)
                 class_ids = np.delete(class_ids, exclude_ix, axis=0)
                 scores = np.delete(scores, exclude_ix, axis=0)
+                probs = np.delete(probs, exclude_ix, axis=0)
                 if not cf.frcnn_mode:
                     masks = np.delete(masks, exclude_ix, axis=0)
 
@@ -794,6 +797,7 @@ def get_results(cf, img_shape, detections, detection_masks, box_results_list=Non
             if 0 not in boxes.shape:
                 for ix2, score in enumerate(scores):
                     box_results_list[ix].append({'box_coords': boxes[ix2], 'box_score': score,
+                                                 'box_probs': probs[ix2],
                                                  'box_type': 'det', 'box_pred_class_id': class_ids[ix2]})
 
         seg_preds.append(final_masks)

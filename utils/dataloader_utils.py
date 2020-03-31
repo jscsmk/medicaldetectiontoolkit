@@ -315,6 +315,7 @@ def get_bbox(txt_path, h, w):
     with open(txt_path, 'r') as txt_f:
         content = txt_f.readlines()
         targets = []
+        targets_cls = []
 
         for line in content:
             teeth_data = line.split(',')
@@ -326,6 +327,9 @@ def get_bbox(txt_path, h, w):
             # skip missing tooth
             if not is_true(teeth_data[1]):
                 continue
+
+            tooth_num = int(teeth_data[0])
+            tooth_cls = (tooth_num // 10) * 8 + tooth_num % 10 - 8 # 0 : background, 1 ~ 32 = tooth
 
             x_max = y_max = -math.inf
             x_min = y_min = math.inf
@@ -342,9 +346,11 @@ def get_bbox(txt_path, h, w):
             x_min, y_min = interpret_coord((x_min, y_min), (h, w), target_size=(512, 768))
             x_max, y_max = interpret_coord((x_max, y_max), (h, w), target_size=(512, 768))
             targets.append([y_min, x_min, y_max, x_max])
+            targets_cls.append(tooth_cls)
 
     targets = np.array(targets)
-    return targets
+    targets_cls = np.array(targets_cls)
+    return targets, targets_cls
 
 
 def interpret_coord(coord, size, target_size=(224, 224), do_normalize=False):

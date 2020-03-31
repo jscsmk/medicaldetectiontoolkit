@@ -1114,6 +1114,7 @@ def save_results(batch, boxes_batch, path, do_nms=False, nms_thresh=0.3, save_im
         output_list = []
         for i in keep:
             box = boxes[i]
+            probs = box['box_probs'].tolist()
             score = str(box['box_score'])[:6]
             y1, x1, y2, x2 = box['box_coords']
             x1, y1 = restore_coords(x1, y1, H, W, orig_H, orig_W)
@@ -1130,6 +1131,7 @@ def save_results(batch, boxes_batch, path, do_nms=False, nms_thresh=0.3, save_im
                 cur_dict['center'] = ((x1+x2)//2, (y1+y2)//2)
                 cur_dict['bbox_wh'] = (x2-x1, y2-y1)
                 cur_dict['score'] = score
+                cur_dict['probs'] = probs
                 output_list.append(cur_dict)
 
         if save_img:

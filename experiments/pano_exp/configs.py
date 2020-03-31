@@ -233,7 +233,7 @@ class configs(DefaultConfigs):
         self.n_plot_rpn_props = 5 if self.dim == 2 else 40
 
         # number of classes for head networks: n_foreground_classes + 1 (background)
-        self.head_classes = 2 # foreground vs. background
+        self.head_classes = 32 + 1 # foreground vs. background
 
         # seg_classes hier refers to the first stage classifier (RPN)
         self.num_seg_classes = 2  # foreground vs. background
